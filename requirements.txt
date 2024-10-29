@@ -3,3 +3,4 @@ Werkzeug==2.0.3
 psycopg2
 Flask-JWT-Extended
 openai
+Flask-Cors
