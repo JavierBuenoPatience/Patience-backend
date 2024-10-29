@@ -16,10 +16,12 @@ DATABASE_URL = "postgresql://patience_db_user:MG6yUiJuOHYyKXN8xYJx4TqQGY8n6uxl@d
 def connect_db():
     return psycopg2.connect(DATABASE_URL)
 
-# Creación de la tabla de usuarios
-def create_user_table():
+# Creación de tablas
+def create_tables():
     conn = connect_db()
     cur = conn.cursor()
+
+    # Tabla de usuarios
     cur.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
@@ -30,12 +32,33 @@ def create_user_table():
             study_hours INT
         );
     ''')
+
+    # Tabla de grupos
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS groups (
+            id SERIAL PRIMARY KEY,
+            name VARCHAR(50) UNIQUE NOT NULL,
+            description TEXT
+        );
+    ''')
+
+    # Tabla de mensajes
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS messages (
+            id SERIAL PRIMARY KEY,
+            user_id INT REFERENCES users(id),
+            group_id INT REFERENCES groups(id),
+            message TEXT NOT NULL,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    ''')
+
     conn.commit()
     cur.close()
     conn.close()
 
-# Llama a la función para crear la tabla cuando inicie el servidor
-create_user_table()
+# Llama a la función para crear las tablas cuando inicie el servidor
+create_tables()
 
 # Ruta de registro de usuarios
 @app.route('/register', methods=['POST'])
@@ -84,12 +107,77 @@ def login():
     else:
         return jsonify({"error": "Usuario o contraseña incorrectos"}), 401
 
-# Ruta protegida de ejemplo (solo accesible con token)
-@app.route('/profile', methods=['GET'])
+# Ruta para crear un grupo
+@app.route('/create_group', methods=['POST'])
 @jwt_required()
-def profile():
+def create_group():
+    data = request.json
+    group_name = data['name']
+    description = data.get('description', '')
+
+    conn = connect_db()
+    cur = conn.cursor()
+    try:
+        cur.execute('''
+            INSERT INTO groups (name, description)
+            VALUES (%s, %s);
+        ''', (group_name, description))
+        conn.commit()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({"message": "Grupo creado exitosamente"}), 201
+
+# Ruta para enviar un mensaje en un grupo
+@app.route('/send_message', methods=['POST'])
+@jwt_required()
+def send_message():
     current_user = get_jwt_identity()
-    return jsonify({"username": current_user, "message": "Perfil del usuario"}), 200
+    data = request.json
+    group_id = data['group_id']
+    message = data['message']
+
+    # Obtener el ID del usuario
+    conn = connect_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE username = %s", (current_user,))
+    user_id = cur.fetchone()[0]
+
+    try:
+        cur.execute('''
+            INSERT INTO messages (user_id, group_id, message)
+            VALUES (%s, %s, %s);
+        ''', (user_id, group_id, message))
+        conn.commit()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({"message": "Mensaje enviado exitosamente"}), 201
+
+# Ruta para obtener mensajes de un grupo
+@app.route('/get_messages/<int:group_id>', methods=['GET'])
+@jwt_required()
+def get_messages(group_id):
+    conn = connect_db()
+    cur = conn.cursor()
+    cur.execute('''
+        SELECT users.username, messages.message, messages.timestamp
+        FROM messages
+        JOIN users ON messages.user_id = users.id
+        WHERE messages.group_id = %s
+        ORDER BY messages.timestamp ASC;
+    ''', (group_id,))
+    messages = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    return jsonify([{"username": msg[0], "message": msg[1], "timestamp": msg[2]} for msg in messages])
 
 # Ruta inicial de prueba
 @app.route('/')
@@ -98,4 +186,3 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
-
