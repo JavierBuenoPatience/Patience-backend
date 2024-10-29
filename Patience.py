@@ -7,15 +7,17 @@ import openai
 import os
 
 app = Flask(__name__)
-CORS(app)  # Habilita CORS para todas las rutas
+
+# Configuración de CORS para permitir solicitudes desde tu frontend
+CORS(app, resources={r"/*": {"origins": ["https://patience-frontend.onrender.com"]}})
 
 # Configuración de la clave secreta para JWT y la clave de API de OpenAI
-app.config['JWT_SECRET_KEY'] = 'supersecreto'  # Cambia esta clave secreta en un entorno de producción
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')  # Debes configurar esta variable de entorno en Render
 openai.api_key = os.getenv("OPENAI_API_KEY")  # Obtiene la clave API de OpenAI desde una variable de entorno
 jwt = JWTManager(app)
 
-# URL de la base de datos en Render
-DATABASE_URL = "postgresql://patience_db_user:MG6yUiJuOHYyKXN8xYJx4TqQGY8n6uxl@dpg-csf68i3tq21c738k77sg-a/patience_db"
+# URL de la base de datos en Render, obtenida de una variable de entorno
+DATABASE_URL = os.getenv('DATABASE_URL')  # Debes configurar esta variable de entorno en Render
 
 # Conexión a la base de datos
 def connect_db():
