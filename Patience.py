@@ -2,14 +2,17 @@ from flask import Flask, request, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 import psycopg2
+import openai  # Importa la biblioteca de OpenAI
+import os  # Importa os para acceder a las variables de entorno
 
 app = Flask(__name__)
 
-# Configuración de la clave secreta para JWT
+# Configuración de la clave secreta para JWT y la clave de API de OpenAI
 app.config['JWT_SECRET_KEY'] = 'supersecreto'  # Cambia esta clave secreta en un entorno de producción
+openai.api_key = os.getenv("OPENAI_API_KEY")  # Obtiene la clave API de OpenAI desde una variable de entorno
 jwt = JWTManager(app)
 
-# URL de la base de datos en Render (asegúrate de que sea correcta)
+# URL de la base de datos en Render
 DATABASE_URL = "postgresql://patience_db_user:MG6yUiJuOHYyKXN8xYJx4TqQGY8n6uxl@dpg-csf68i3tq21c738k77sg-a.oregon-postgres.render.com/patience_db"
 
 # Conexión a la base de datos
@@ -107,77 +110,27 @@ def login():
     else:
         return jsonify({"error": "Usuario o contraseña incorrectos"}), 401
 
-# Ruta para crear un grupo
-@app.route('/create_group', methods=['POST'])
+# Ruta para interactuar con ChatGPT
+@app.route('/chatgpt', methods=['POST'])
 @jwt_required()
-def create_group():
-    data = request.json
-    group_name = data['name']
-    description = data.get('description', '')
-
-    conn = connect_db()
-    cur = conn.cursor()
-    try:
-        cur.execute('''
-            INSERT INTO groups (name, description)
-            VALUES (%s, %s);
-        ''', (group_name, description))
-        conn.commit()
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
-    finally:
-        cur.close()
-        conn.close()
-
-    return jsonify({"message": "Grupo creado exitosamente"}), 201
-
-# Ruta para enviar un mensaje en un grupo
-@app.route('/send_message', methods=['POST'])
-@jwt_required()
-def send_message():
+def chatgpt():
     current_user = get_jwt_identity()
     data = request.json
-    group_id = data['group_id']
-    message = data['message']
-
-    # Obtener el ID del usuario
-    conn = connect_db()
-    cur = conn.cursor()
-    cur.execute("SELECT id FROM users WHERE username = %s", (current_user,))
-    user_id = cur.fetchone()[0]
+    user_message = data['message']
 
     try:
-        cur.execute('''
-            INSERT INTO messages (user_id, group_id, message)
-            VALUES (%s, %s, %s);
-        ''', (user_id, group_id, message))
-        conn.commit()
+        # Realizar la solicitud a ChatGPT
+        response = openai.Completion.create(
+            engine="text-davinci-003",
+            prompt=user_message,
+            max_tokens=100
+        )
+        chatgpt_response = response.choices[0].text.strip()
+
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
-    finally:
-        cur.close()
-        conn.close()
+        return jsonify({"error": str(e)}), 500
 
-    return jsonify({"message": "Mensaje enviado exitosamente"}), 201
-
-# Ruta para obtener mensajes de un grupo
-@app.route('/get_messages/<int:group_id>', methods=['GET'])
-@jwt_required()
-def get_messages(group_id):
-    conn = connect_db()
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT users.username, messages.message, messages.timestamp
-        FROM messages
-        JOIN users ON messages.user_id = users.id
-        WHERE messages.group_id = %s
-        ORDER BY messages.timestamp ASC;
-    ''', (group_id,))
-    messages = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    return jsonify([{"username": msg[0], "message": msg[1], "timestamp": msg[2]} for msg in messages])
+    return jsonify({"user": current_user, "response": chatgpt_response})
 
 # Ruta inicial de prueba
 @app.route('/')
