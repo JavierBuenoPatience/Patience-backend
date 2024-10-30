@@ -1,22 +1,24 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-# Configura CORS para permitir solicitudes desde GitHub Pages y Render
-CORS(app)
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 import psycopg2
 import openai
 import os
 
+# Crear instancia de Flask
 app = Flask(__name__)
 
+# Configuración de CORS para permitir solicitudes desde tu frontend en GitHub Pages y Render
+CORS(app, resources={r"/*": {"origins": ["https://patience-frontend.onrender.com", "https://javierbuenopatience.github.io/Patience"]}})
+
 # Configuración de la clave secreta para JWT y la clave de API de OpenAI
-app.config['JWT_SECRET_KEY'] = 'supersecreto'  # Cambia esta clave secreta en un entorno de producción
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')  # Debes configurar esta variable de entorno en Render
 openai.api_key = os.getenv("OPENAI_API_KEY")  # Obtiene la clave API de OpenAI desde una variable de entorno
 jwt = JWTManager(app)
 
-# URL de la base de datos en Render
-DATABASE_URL = "postgresql://patience_db_user:MG6yUiJuOHYyKXN8xYJx4TqQGY8n6uxl@dpg-csf68i3tq21c738k77sg-a.oregon-postgres.render.com/patience_db"
+# URL de la base de datos en Render, obtenida de una variable de entorno
+DATABASE_URL = os.getenv('DATABASE_URL')  # Debes configurar esta variable de entorno en Render
 
 # Conexión a la base de datos
 def connect_db():
@@ -31,31 +33,15 @@ def create_tables():
     cur.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
-            username VARCHAR(50) UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
             email VARCHAR(50) UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            full_name VARCHAR(100),
+            phone VARCHAR(20),
+            study_hours VARCHAR(50),
+            specialty VARCHAR(100),
             hobbies TEXT,
-            study_hours INT
-        );
-    ''')
-
-    # Tabla de grupos
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS groups (
-            id SERIAL PRIMARY KEY,
-            name VARCHAR(50) UNIQUE NOT NULL,
-            description TEXT
-        );
-    ''')
-
-    # Tabla de mensajes
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS messages (
-            id SERIAL PRIMARY KEY,
-            user_id INT REFERENCES users(id),
-            group_id INT REFERENCES groups(id),
-            message TEXT NOT NULL,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            location VARCHAR(100),
+            is_admin BOOLEAN DEFAULT FALSE
         );
     ''')
 
@@ -70,22 +56,19 @@ create_tables()
 @app.route('/register', methods=['POST'])
 def register():
     data = request.json
-    username = data['username']
     password = generate_password_hash(data['password'])
     email = data['email']
-    hobbies = data.get('hobbies', '')
-    study_hours = data.get('study_hours', 0)
 
     conn = connect_db()
     cur = conn.cursor()
     try:
         cur.execute('''
-            INSERT INTO users (username, password_hash, email, hobbies, study_hours)
-            VALUES (%s, %s, %s, %s, %s);
-        ''', (username, password, email, hobbies, study_hours))
+            INSERT INTO users (email, password_hash)
+            VALUES (%s, %s);
+        ''', (email, password))
         conn.commit()
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        return jsonify({"error": "Error al registrar usuario: " + str(e)}), 400
     finally:
         cur.close()
         conn.close()
@@ -96,22 +79,84 @@ def register():
 @app.route('/login', methods=['POST'])
 def login():
     data = request.json
-    username = data['username']
+    email = data['email']
     password = data['password']
 
     conn = connect_db()
     cur = conn.cursor()
-    cur.execute("SELECT password_hash FROM users WHERE username = %s", (username,))
+    cur.execute("SELECT password_hash FROM users WHERE email = %s", (email,))
     user = cur.fetchone()
     cur.close()
     conn.close()
 
     if user and check_password_hash(user[0], password):
         # Crear token JWT para el usuario autenticado
-        access_token = create_access_token(identity=username)
+        access_token = create_access_token(identity=email)
         return jsonify(access_token=access_token), 200
     else:
         return jsonify({"error": "Usuario o contraseña incorrectos"}), 401
+
+# Ruta para obtener el perfil del usuario
+@app.route('/profile', methods=['GET'])
+@jwt_required()
+def get_profile():
+    current_user = get_jwt_identity()
+
+    conn = connect_db()
+    cur = conn.cursor()
+    cur.execute('''
+        SELECT email, full_name, phone, study_hours, specialty, hobbies, location
+        FROM users WHERE email = %s;
+    ''', (current_user,))
+    user = cur.fetchone()
+    cur.close()
+    conn.close()
+
+    if user:
+        user_data = {
+            "email": user[0],
+            "full_name": user[1],
+            "phone": user[2],
+            "study_hours": user[3],
+            "specialty": user[4],
+            "hobbies": user[5],
+            "location": user[6]
+        }
+        return jsonify(user_data), 200
+    else:
+        return jsonify({"error": "Usuario no encontrado"}), 404
+
+# Ruta para actualizar el perfil del usuario
+@app.route('/profile', methods=['PUT'])
+@jwt_required()
+def update_profile():
+    current_user = get_jwt_identity()
+    data = request.json
+
+    conn = connect_db()
+    cur = conn.cursor()
+    try:
+        cur.execute('''
+            UPDATE users
+            SET full_name = %s, phone = %s, study_hours = %s, specialty = %s, hobbies = %s, location = %s
+            WHERE email = %s;
+        ''', (
+            data.get('full_name'),
+            data.get('phone'),
+            data.get('study_hours'),
+            data.get('specialty'),
+            data.get('hobbies'),
+            data.get('location'),
+            current_user
+        ))
+        conn.commit()
+    except Exception as e:
+        return jsonify({"error": "Error al actualizar perfil: " + str(e)}), 400
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({"message": "Perfil actualizado exitosamente"}), 200
 
 # Ruta para interactuar con ChatGPT
 @app.route('/chatgpt', methods=['POST'])
@@ -126,14 +171,14 @@ def chatgpt():
         response = openai.Completion.create(
             engine="text-davinci-003",
             prompt=user_message,
-            max_tokens=100
+            max_tokens=150
         )
         chatgpt_response = response.choices[0].text.strip()
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Error al comunicarse con ChatGPT: " + str(e)}), 500
 
-    return jsonify({"user": current_user, "response": chatgpt_response})
+    return jsonify({"response": chatgpt_response})
 
 # Ruta inicial de prueba
 @app.route('/')
