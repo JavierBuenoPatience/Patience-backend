@@ -10,7 +10,7 @@ import os
 app = Flask(__name__)
 
 # Configuración de CORS para permitir solicitudes desde tu frontend en GitHub Pages y Render
-CORS(app, resources={r"/*": {"origins": ["https://patience-frontend.onrender.com", "https://javierbuenopatience.github.io"]}})
+CORS(app, resources={r"/*": {"origins": ["https://patience-frontend.onrender.com", "https://javierbuenopatience.github.io"], "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"], "allow_headers": ["Content-Type", "Authorization"]}})
 
 # Configuración de la clave secreta para JWT y la clave de API de OpenAI
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')  # Debes configurar esta variable de entorno en Render
@@ -29,10 +29,11 @@ def create_tables():
     conn = connect_db()
     cur = conn.cursor()
 
-    # Tabla de usuarios
+    # Tabla de usuarios con el campo 'username' añadido
     cur.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
+            username VARCHAR(50) NOT NULL,
             email VARCHAR(50) UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             full_name VARCHAR(100),
@@ -56,18 +57,26 @@ create_tables()
 @app.route('/register', methods=['POST'])
 def register():
     data = request.json
-    password = generate_password_hash(data['password'])
-    email = data['email']
+    username = data.get('username')
+    email = data.get('email')
+    password = data.get('password')
+
+    # Validar que todos los campos estén presentes
+    if not username or not email or not password:
+        return jsonify({"error": "Todos los campos son obligatorios."}), 400
+
+    password_hash = generate_password_hash(password)
 
     conn = connect_db()
     cur = conn.cursor()
     try:
         cur.execute('''
-            INSERT INTO users (email, password_hash)
-            VALUES (%s, %s);
-        ''', (email, password))
+            INSERT INTO users (username, email, password_hash)
+            VALUES (%s, %s, %s);
+        ''', (username, email, password_hash))
         conn.commit()
     except Exception as e:
+        conn.rollback()
         return jsonify({"error": "Error al registrar usuario: " + str(e)}), 400
     finally:
         cur.close()
@@ -79,20 +88,20 @@ def register():
 @app.route('/login', methods=['POST'])
 def login():
     data = request.json
-    email = data['email']
-    password = data['password']
+    email = data.get('email')
+    password = data.get('password')
 
     conn = connect_db()
     cur = conn.cursor()
-    cur.execute("SELECT password_hash FROM users WHERE email = %s", (email,))
+    cur.execute("SELECT id, username, password_hash FROM users WHERE email = %s", (email,))
     user = cur.fetchone()
     cur.close()
     conn.close()
 
-    if user and check_password_hash(user[0], password):
+    if user and check_password_hash(user[2], password):
         # Crear token JWT para el usuario autenticado
-        access_token = create_access_token(identity=email)
-        return jsonify(access_token=access_token), 200
+        access_token = create_access_token(identity={'id': user[0], 'email': email, 'username': user[1]})
+        return jsonify(access_token=access_token, username=user[1]), 200
     else:
         return jsonify({"error": "Usuario o contraseña incorrectos"}), 401
 
@@ -107,7 +116,7 @@ def get_profile():
     cur.execute('''
         SELECT email, full_name, phone, study_hours, specialty, hobbies, location
         FROM users WHERE email = %s;
-    ''', (current_user,))
+    ''', (current_user['email'],))
     user = cur.fetchone()
     cur.close()
     conn.close()
@@ -147,10 +156,11 @@ def update_profile():
             data.get('specialty'),
             data.get('hobbies'),
             data.get('location'),
-            current_user
+            current_user['email']
         ))
         conn.commit()
     except Exception as e:
+        conn.rollback()
         return jsonify({"error": "Error al actualizar perfil: " + str(e)}), 400
     finally:
         cur.close()
@@ -162,12 +172,11 @@ def update_profile():
 @app.route('/chatgpt', methods=['POST'])
 @jwt_required()
 def chatgpt():
-    current_user = get_jwt_identity()
     data = request.json
     user_message = data['message']
 
     try:
-        # Realizar la solicitud a ChatGPT
+        # Realizar la solicitud a OpenAI
         response = openai.Completion.create(
             engine="text-davinci-003",
             prompt=user_message,
@@ -176,7 +185,7 @@ def chatgpt():
         chatgpt_response = response.choices[0].text.strip()
 
     except Exception as e:
-        return jsonify({"error": "Error al comunicarse con ChatGPT: " + str(e)}), 500
+        return jsonify({"error": "Error al comunicarse con OpenAI: " + str(e)}), 500
 
     return jsonify({"response": chatgpt_response})
 
@@ -188,3 +197,4 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 8080))
     app.run(host="0.0.0.0", port=port)
+
