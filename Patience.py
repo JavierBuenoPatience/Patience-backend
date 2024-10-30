@@ -115,14 +115,14 @@ def login():
 
     conn = connect_db()
     cur = conn.cursor()
-    cur.execute("SELECT id, username, password_hash FROM users WHERE email = %s", (email,))
+    cur.execute("SELECT id, username, password_hash, is_admin FROM users WHERE email = %s", (email,))
     user = cur.fetchone()
     cur.close()
     conn.close()
 
     if user and check_password_hash(user[2], password):
         # Crear token JWT para el usuario autenticado
-        access_token = create_access_token(identity={'id': user[0], 'email': email, 'username': user[1]})
+        access_token = create_access_token(identity={'id': user[0], 'email': email, 'username': user[1], 'is_admin': user[3]})
         return jsonify(access_token=access_token, username=user[1]), 200
     else:
         return jsonify({"error": "Usuario o contraseña incorrectos"}), 401
@@ -242,24 +242,33 @@ def uploaded_file(filename):
 @jwt_required()
 def chatgpt():
     data = request.json
-    user_message = data['message']
+    messages = data.get('messages')
+    specialty = data.get('specialty')
 
     if not openai.api_key:
         return jsonify({"error": "La clave API de OpenAI no está configurada"}), 500
 
+    if not messages:
+        return jsonify({"error": "No se proporcionaron mensajes"}), 400
+
+    # Agregar el contexto de la especialidad al inicio de la conversación
+    system_message = {
+        "role": "system",
+        "content": f"Eres un asistente especializado en {specialty}. Proporciona respuestas detalladas y precisas."
+    }
+    conversation = [system_message] + messages
+
     try:
         # Realizar la solicitud a OpenAI
-        response = openai.Completion.create(
-            engine="text-davinci-003",
-            prompt=user_message,
-            max_tokens=150
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=conversation
         )
-        chatgpt_response = response.choices[0].text.strip()
-
+        assistant_message = response['choices'][0]['message']['content'].strip()
     except Exception as e:
         return jsonify({"error": "Error al comunicarse con OpenAI: " + str(e)}), 500
 
-    return jsonify({"response": chatgpt_response})
+    return jsonify({"assistant_message": assistant_message})
 
 # Ruta para subir documentos
 @app.route('/upload_document', methods=['POST'])
@@ -341,4 +350,3 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 8080))
     app.run(host="0.0.0.0", port=port)
-
