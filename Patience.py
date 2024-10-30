@@ -10,7 +10,7 @@ import os
 app = Flask(__name__)
 
 # Configuración de CORS para permitir solicitudes desde tu frontend en GitHub Pages y Render
-CORS(app, resources={r"/*": {"origins": ["https://patience-frontend.onrender.com", "https://javierbuenopatience.github.io/Patience"]}})
+CORS(app, resources={r"/*": {"origins": ["https://patience-frontend.onrender.com", "https://javierbuenopatience.github.io"]}})
 
 # Configuración de la clave secreta para JWT y la clave de API de OpenAI
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')  # Debes configurar esta variable de entorno en Render
