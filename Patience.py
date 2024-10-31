@@ -248,7 +248,7 @@ def upload_profile_image():
 def uploaded_file(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
-# Ruta para interactuar con ChatGPT
+# Ruta para interactuar con ChatGPT (nueva implementación para openai>=1.0.0)
 @app.route('/chatgpt', methods=['POST'])
 @jwt_required()
 def chatgpt():
@@ -274,7 +274,7 @@ def chatgpt():
             model="gpt-3.5-turbo",
             messages=conversation
         )
-        assistant_message = response['choices'][0]['message']['content'].strip()
+        assistant_message = response.choices[0].message.content.strip()
     except Exception as e:
         logging.error(f"Error en la ruta /chatgpt: {e}")
         return jsonify({"error": "Error al comunicarse con OpenAI"}), 500
@@ -355,3 +355,4 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 8080))
     app.run(host="0.0.0.0", port=port)
+
