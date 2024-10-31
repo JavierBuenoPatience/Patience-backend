@@ -121,12 +121,14 @@ def register():
 
     return jsonify({"message": "Usuario registrado exitosamente"}), 201
 
-# Ruta de inicio de sesión
+# Ruta de inicio de sesión con detalles de depuración
 @app.route('/login', methods=['POST'])
 def login():
     data = request.json
     email = data.get('email')
     password = data.get('password')
+
+    logging.info("Intento de inicio de sesión para el correo electrónico: %s", email)
 
     try:
         conn = connect_db()
@@ -136,10 +138,18 @@ def login():
         cur.close()
         conn.close()
 
-        if user and check_password_hash(user[2], password):
-            access_token = create_access_token(identity={'id': user[0], 'email': email, 'username': user[1], 'is_admin': user[3]})
-            return jsonify(access_token=access_token, username=user[1]), 200
+        if user:
+            logging.info("Usuario encontrado en la base de datos: %s", user[1])
+
+            if check_password_hash(user[2], password):
+                logging.info("Contraseña verificada correctamente")
+                access_token = create_access_token(identity={'id': user[0], 'email': email, 'username': user[1], 'is_admin': user[3]})
+                return jsonify(access_token=access_token, username=user[1]), 200
+            else:
+                logging.warning("Contraseña incorrecta para el usuario %s", user[1])
+                return jsonify({"error": "Usuario o contraseña incorrectos"}), 401
         else:
+            logging.warning("No se encontró el usuario con el correo electrónico: %s", email)
             return jsonify({"error": "Usuario o contraseña incorrectos"}), 401
 
     except Exception as e:
@@ -151,16 +161,14 @@ def login():
 @jwt_required()
 def get_profile():
     current_user = get_jwt_identity()
-
+    conn = connect_db()
+    cur = conn.cursor()
     try:
-        conn = connect_db()
-        cur = conn.cursor()
         cur.execute('''
             SELECT email, full_name, phone, study_hours, specialty, hobbies, location, profile_image
             FROM users WHERE email = %s;
         ''', (current_user['email'],))
         user = cur.fetchone()
-
         if user:
             user_data = {
                 "email": user[0],
@@ -176,8 +184,8 @@ def get_profile():
         else:
             return jsonify({"error": "Usuario no encontrado"}), 404
     except Exception as e:
-        log_error("Error al obtener el perfil del usuario", e)
-        return jsonify({"error": "Error interno en el servidor"}), 500
+        log_error("Error al cargar perfil", e)
+        return jsonify({"error": "Error al cargar perfil"}), 500
     finally:
         cur.close()
         conn.close()
@@ -189,9 +197,9 @@ def update_profile():
     current_user = get_jwt_identity()
     data = request.json
 
+    conn = connect_db()
+    cur = conn.cursor()
     try:
-        conn = connect_db()
-        cur = conn.cursor()
         cur.execute('''
             UPDATE users
             SET full_name = %s, phone = %s, study_hours = %s, specialty = %s, hobbies = %s, location = %s
@@ -210,7 +218,7 @@ def update_profile():
     except Exception as e:
         conn.rollback()
         log_error("Error al actualizar perfil", e)
-        return jsonify({"error": "Error interno en el servidor"}), 500
+        return jsonify({"error": "Error al actualizar perfil"}), 400
     finally:
         cur.close()
         conn.close()
@@ -232,10 +240,11 @@ def upload_profile_image():
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
 
+        # Actualizar la ruta de la imagen en la base de datos
+        current_user = get_jwt_identity()
+        conn = connect_db()
+        cur = conn.cursor()
         try:
-            current_user = get_jwt_identity()
-            conn = connect_db()
-            cur = conn.cursor()
             cur.execute('''
                 UPDATE users
                 SET profile_image = %s
@@ -246,17 +255,12 @@ def upload_profile_image():
         except Exception as e:
             conn.rollback()
             log_error("Error al actualizar la imagen de perfil", e)
-            return jsonify({"error": "Error interno en el servidor"}), 500
+            return jsonify({"error": "Error al actualizar la imagen de perfil"}), 400
         finally:
             cur.close()
             conn.close()
     else:
         return jsonify({"error": "Tipo de archivo no permitido"}), 400
-
-# Ruta para servir archivos subidos
-@app.route('/uploads/<filename>')
-def uploaded_file(filename):
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 # Ruta para interactuar con ChatGPT
 @app.route('/chatgpt', methods=['POST'])
@@ -272,6 +276,7 @@ def chatgpt():
     if not messages:
         return jsonify({"error": "No se proporcionaron mensajes"}), 400
 
+    # Agregar el contexto de la especialidad al inicio de la conversación
     system_message = {
         "role": "system",
         "content": f"Eres un asistente especializado en {specialty}. Proporciona respuestas detalladas y precisas."
@@ -279,14 +284,15 @@ def chatgpt():
     conversation = [system_message] + messages
 
     try:
+        # Realizar la solicitud a OpenAI
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=conversation
         )
         assistant_message = response['choices'][0]['message']['content'].strip()
     except Exception as e:
-        log_error("Error al comunicarse con OpenAI", e)
-        return jsonify({"error": "Error al comunicarse con OpenAI"}), 500
+        log_error("Error en la comunicación con OpenAI", e)
+        return jsonify({"error": "Error en la comunicación con OpenAI"}), 500
 
     return jsonify({"assistant_message": assistant_message})
 
@@ -307,10 +313,11 @@ def upload_document():
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
 
+        # Guardar información del documento en la base de datos
+        current_user = get_jwt_identity()
+        conn = connect_db()
+        cur = conn.cursor()
         try:
-            current_user = get_jwt_identity()
-            conn = connect_db()
-            cur = conn.cursor()
             cur.execute("SELECT id FROM users WHERE email = %s", (current_user['email'],))
             user_id = cur.fetchone()[0]
 
@@ -323,7 +330,7 @@ def upload_document():
         except Exception as e:
             conn.rollback()
             log_error("Error al subir documento", e)
-            return jsonify({"error": "Error interno en el servidor"}), 500
+            return jsonify({"error": "Error al subir el documento"}), 400
         finally:
             cur.close()
             conn.close()
@@ -335,9 +342,9 @@ def upload_document():
 @jwt_required()
 def get_documents():
     current_user = get_jwt_identity()
+    conn = connect_db()
+    cur = conn.cursor()
     try:
-        conn = connect_db()
-        cur = conn.cursor()
         cur.execute("SELECT id FROM users WHERE email = %s", (current_user['email'],))
         user_id = cur.fetchone()[0]
 
@@ -346,11 +353,17 @@ def get_documents():
             FROM documents WHERE user_id = %s;
         ''', (user_id,))
         documents = cur.fetchall()
-        documents_list = [{"id": doc[0], "filename": doc[1], "upload_date": doc[2].strftime("%Y-%m-%d %H:%M:%S")} for doc in documents]
+        documents_list = []
+        for doc in documents:
+            documents_list.append({
+                "id": doc[0],
+                "filename": doc[1],
+                "upload_date": doc[2].strftime("%Y-%m-%d %H:%M:%S")
+            })
         return jsonify({"documents": documents_list}), 200
     except Exception as e:
         log_error("Error al obtener documentos", e)
-        return jsonify({"error": "Error interno en el servidor"}), 500
+        return jsonify({"error": "Error al obtener documentos"}), 400
     finally:
         cur.close()
         conn.close()
