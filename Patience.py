@@ -1,4 +1,5 @@
 import os
+import logging
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -10,12 +11,12 @@ import openai
 # Crear instancia de Flask
 app = Flask(__name__)
 
-# Configuración de CORS para permitir solicitudes desde tu frontend en GitHub Pages y Render
+# Configuración de CORS para permitir solicitudes desde el frontend
 CORS(app, resources={r"/*": {"origins": ["https://patience-frontend.onrender.com", "https://javierbuenopatience.github.io"], "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"], "allow_headers": ["Content-Type", "Authorization"]}})
 
 # Configuración de la clave secreta para JWT y la clave de API de OpenAI
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')  # Debes configurar esta variable de entorno en Render
-openai.api_key = os.getenv("OPENAI_API_KEY")  # Obtiene la clave API de OpenAI desde una variable de entorno
+openai.api_key = os.getenv("OPENAI_API_KEY")  # Clave API de OpenAI desde variable de entorno
 jwt = JWTManager(app)
 
 # Configuración para la subida de archivos
@@ -27,9 +28,20 @@ ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'pdf', 'docx', 'txt'}
 # URL de la base de datos en Render, obtenida de una variable de entorno
 DATABASE_URL = os.getenv('DATABASE_URL')  # Debes configurar esta variable de entorno en Render
 
+# Configuración de logging para registrar errores
+logging.basicConfig(level=logging.INFO)
+
+# Función de ayuda para registrar errores
+def log_error(message, error):
+    logging.error(f"{message}: {error}")
+
 # Conexión a la base de datos
 def connect_db():
-    return psycopg2.connect(DATABASE_URL)
+    try:
+        return psycopg2.connect(DATABASE_URL)
+    except Exception as e:
+        log_error("Error de conexión a la base de datos", e)
+        raise e
 
 # Función para verificar extensiones de archivo permitidas
 def allowed_file(filename):
@@ -39,38 +51,41 @@ def allowed_file(filename):
 def create_tables():
     conn = connect_db()
     cur = conn.cursor()
+    try:
+        # Tabla de usuarios
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username VARCHAR(50) NOT NULL,
+                email VARCHAR(50) UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                profile_image VARCHAR(200),
+                full_name VARCHAR(100),
+                phone VARCHAR(20),
+                study_hours VARCHAR(50),
+                specialty VARCHAR(100),
+                hobbies TEXT,
+                location VARCHAR(100),
+                is_admin BOOLEAN DEFAULT FALSE
+            );
+        ''')
 
-    # Tabla de usuarios con el campo 'username' y 'profile_image'
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id SERIAL PRIMARY KEY,
-            username VARCHAR(50) NOT NULL,
-            email VARCHAR(50) UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            profile_image VARCHAR(200),
-            full_name VARCHAR(100),
-            phone VARCHAR(20),
-            study_hours VARCHAR(50),
-            specialty VARCHAR(100),
-            hobbies TEXT,
-            location VARCHAR(100),
-            is_admin BOOLEAN DEFAULT FALSE
-        );
-    ''')
-
-    # Tabla de documentos
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS documents (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER REFERENCES users(id),
-            filename VARCHAR(200),
-            upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    ''')
-
-    conn.commit()
-    cur.close()
-    conn.close()
+        # Tabla de documentos
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS documents (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id),
+                filename VARCHAR(200),
+                upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        ''')
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        log_error("Error al crear tablas en la base de datos", e)
+    finally:
+        cur.close()
+        conn.close()
 
 # Llama a la función para crear las tablas cuando inicie el servidor
 create_tables()
@@ -83,7 +98,6 @@ def register():
     email = data.get('email')
     password = data.get('password')
 
-    # Validar que todos los campos estén presentes
     if not username or not email or not password:
         return jsonify({"error": "Todos los campos son obligatorios."}), 400
 
@@ -99,7 +113,8 @@ def register():
         conn.commit()
     except Exception as e:
         conn.rollback()
-        return jsonify({"error": "Error al registrar usuario: " + str(e)}), 400
+        log_error("Error al registrar usuario", e)
+        return jsonify({"error": "Error al registrar usuario. Inténtalo más tarde."}), 400
     finally:
         cur.close()
         conn.close()
@@ -113,19 +128,23 @@ def login():
     email = data.get('email')
     password = data.get('password')
 
-    conn = connect_db()
-    cur = conn.cursor()
-    cur.execute("SELECT id, username, password_hash, is_admin FROM users WHERE email = %s", (email,))
-    user = cur.fetchone()
-    cur.close()
-    conn.close()
+    try:
+        conn = connect_db()
+        cur = conn.cursor()
+        cur.execute("SELECT id, username, password_hash, is_admin FROM users WHERE email = %s", (email,))
+        user = cur.fetchone()
+        cur.close()
+        conn.close()
 
-    if user and check_password_hash(user[2], password):
-        # Crear token JWT para el usuario autenticado
-        access_token = create_access_token(identity={'id': user[0], 'email': email, 'username': user[1], 'is_admin': user[3]})
-        return jsonify(access_token=access_token, username=user[1]), 200
-    else:
-        return jsonify({"error": "Usuario o contraseña incorrectos"}), 401
+        if user and check_password_hash(user[2], password):
+            access_token = create_access_token(identity={'id': user[0], 'email': email, 'username': user[1], 'is_admin': user[3]})
+            return jsonify(access_token=access_token, username=user[1]), 200
+        else:
+            return jsonify({"error": "Usuario o contraseña incorrectos"}), 401
+
+    except Exception as e:
+        log_error("Error en la ruta /login", e)
+        return jsonify({"error": "Error interno en el servidor"}), 500
 
 # Ruta para obtener el perfil del usuario
 @app.route('/profile', methods=['GET'])
@@ -133,9 +152,9 @@ def login():
 def get_profile():
     current_user = get_jwt_identity()
 
-    conn = connect_db()
-    cur = conn.cursor()
     try:
+        conn = connect_db()
+        cur = conn.cursor()
         cur.execute('''
             SELECT email, full_name, phone, study_hours, specialty, hobbies, location, profile_image
             FROM users WHERE email = %s;
@@ -157,7 +176,8 @@ def get_profile():
         else:
             return jsonify({"error": "Usuario no encontrado"}), 404
     except Exception as e:
-        return jsonify({"error": "Error al cargar perfil: " + str(e)}), 500
+        log_error("Error al obtener el perfil del usuario", e)
+        return jsonify({"error": "Error interno en el servidor"}), 500
     finally:
         cur.close()
         conn.close()
@@ -169,9 +189,9 @@ def update_profile():
     current_user = get_jwt_identity()
     data = request.json
 
-    conn = connect_db()
-    cur = conn.cursor()
     try:
+        conn = connect_db()
+        cur = conn.cursor()
         cur.execute('''
             UPDATE users
             SET full_name = %s, phone = %s, study_hours = %s, specialty = %s, hobbies = %s, location = %s
@@ -189,7 +209,8 @@ def update_profile():
         return jsonify({"message": "Perfil actualizado exitosamente"}), 200
     except Exception as e:
         conn.rollback()
-        return jsonify({"error": "Error al actualizar perfil: " + str(e)}), 400
+        log_error("Error al actualizar perfil", e)
+        return jsonify({"error": "Error interno en el servidor"}), 500
     finally:
         cur.close()
         conn.close()
@@ -211,11 +232,10 @@ def upload_profile_image():
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
 
-        # Actualizar la ruta de la imagen en la base de datos
-        current_user = get_jwt_identity()
-        conn = connect_db()
-        cur = conn.cursor()
         try:
+            current_user = get_jwt_identity()
+            conn = connect_db()
+            cur = conn.cursor()
             cur.execute('''
                 UPDATE users
                 SET profile_image = %s
@@ -225,7 +245,8 @@ def upload_profile_image():
             return jsonify({"message": "Imagen de perfil actualizada exitosamente"}), 200
         except Exception as e:
             conn.rollback()
-            return jsonify({"error": "Error al actualizar la imagen de perfil: " + str(e)}), 400
+            log_error("Error al actualizar la imagen de perfil", e)
+            return jsonify({"error": "Error interno en el servidor"}), 500
         finally:
             cur.close()
             conn.close()
@@ -251,7 +272,6 @@ def chatgpt():
     if not messages:
         return jsonify({"error": "No se proporcionaron mensajes"}), 400
 
-    # Agregar el contexto de la especialidad al inicio de la conversación
     system_message = {
         "role": "system",
         "content": f"Eres un asistente especializado en {specialty}. Proporciona respuestas detalladas y precisas."
@@ -259,14 +279,14 @@ def chatgpt():
     conversation = [system_message] + messages
 
     try:
-        # Realizar la solicitud a OpenAI
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=conversation
         )
         assistant_message = response['choices'][0]['message']['content'].strip()
     except Exception as e:
-        return jsonify({"error": "Error al comunicarse con OpenAI: " + str(e)}), 500
+        log_error("Error al comunicarse con OpenAI", e)
+        return jsonify({"error": "Error al comunicarse con OpenAI"}), 500
 
     return jsonify({"assistant_message": assistant_message})
 
@@ -287,12 +307,10 @@ def upload_document():
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
 
-        # Guardar información del documento en la base de datos
-        current_user = get_jwt_identity()
-        conn = connect_db()
-        cur = conn.cursor()
         try:
-            # Obtener el ID del usuario
+            current_user = get_jwt_identity()
+            conn = connect_db()
+            cur = conn.cursor()
             cur.execute("SELECT id FROM users WHERE email = %s", (current_user['email'],))
             user_id = cur.fetchone()[0]
 
@@ -304,7 +322,8 @@ def upload_document():
             return jsonify({"message": "Documento subido exitosamente"}), 200
         except Exception as e:
             conn.rollback()
-            return jsonify({"error": "Error al subir el documento: " + str(e)}), 400
+            log_error("Error al subir documento", e)
+            return jsonify({"error": "Error interno en el servidor"}), 500
         finally:
             cur.close()
             conn.close()
@@ -316,10 +335,9 @@ def upload_document():
 @jwt_required()
 def get_documents():
     current_user = get_jwt_identity()
-    conn = connect_db()
-    cur = conn.cursor()
     try:
-        # Obtener el ID del usuario
+        conn = connect_db()
+        cur = conn.cursor()
         cur.execute("SELECT id FROM users WHERE email = %s", (current_user['email'],))
         user_id = cur.fetchone()[0]
 
@@ -328,16 +346,11 @@ def get_documents():
             FROM documents WHERE user_id = %s;
         ''', (user_id,))
         documents = cur.fetchall()
-        documents_list = []
-        for doc in documents:
-            documents_list.append({
-                "id": doc[0],
-                "filename": doc[1],
-                "upload_date": doc[2].strftime("%Y-%m-%d %H:%M:%S")
-            })
+        documents_list = [{"id": doc[0], "filename": doc[1], "upload_date": doc[2].strftime("%Y-%m-%d %H:%M:%S")} for doc in documents]
         return jsonify({"documents": documents_list}), 200
     except Exception as e:
-        return jsonify({"error": "Error al obtener documentos: " + str(e)}), 400
+        log_error("Error al obtener documentos", e)
+        return jsonify({"error": "Error interno en el servidor"}), 500
     finally:
         cur.close()
         conn.close()
