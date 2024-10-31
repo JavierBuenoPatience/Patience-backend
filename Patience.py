@@ -10,32 +10,30 @@ import openai
 # Crear instancia de Flask
 app = Flask(__name__)
 
-# Configuración de CORS para permitir solicitudes desde tu frontend en GitHub Pages y Render
+# Configuración de CORS
 CORS(app, resources={r"/*": {"origins": ["https://patience-frontend.onrender.com", "https://javierbuenopatience.github.io"], "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"], "allow_headers": ["Content-Type", "Authorization"]}})
 
-# Configuración de la clave secreta para JWT y la clave de API de OpenAI
+# Configuración de JWT y OpenAI API Key
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')
 openai.api_key = os.getenv("OPENAI_API_KEY")
 jwt = JWTManager(app)
 
-# Configuración para la subida de archivos
+# Configuración para subir archivos
 UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'pdf', 'docx', 'txt'}
 
-# URL de la base de datos en Render, obtenida de una variable de entorno
+# Conectar a la base de datos
 DATABASE_URL = os.getenv('DATABASE_URL')
-
-# Conexión a la base de datos
 def connect_db():
     return psycopg2.connect(DATABASE_URL)
 
-# Función para verificar extensiones de archivo permitidas
+# Verificar extensiones de archivo permitidas
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# Creación de tablas
+# Crear tablas
 def create_tables():
     conn = connect_db()
     cur = conn.cursor()
@@ -212,8 +210,8 @@ def chatgpt():
             messages=conversation
         )
         assistant_message = response.choices[0].message['content'].strip()
-    except openai.error.OpenAIError as e:
-        return jsonify({"error": "Error al comunicarse con OpenAI: " + str(e)}), 500
+    except Exception as e:
+        return jsonify({"error": f"Error al comunicarse con OpenAI: {str(e)}"}), 500
 
     return jsonify({"assistant_message": assistant_message})
 
